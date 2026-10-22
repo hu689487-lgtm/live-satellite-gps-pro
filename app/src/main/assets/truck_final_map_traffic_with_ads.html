@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Truck Simulator Final - MAP + TRAFFIC Edition</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0a1120;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #ffffff;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: linear-gradient(#101b2e, #09131d);
+    }
+    .hud {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .topbar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      pointer-events: none;
+    }
+    .panel {
+      background: rgba(8, 14, 22, 0.42);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px;
+      padding: 8px 10px;
+      backdrop-filter: blur(4px);
+    }
+    .mission {
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .map-box {
+      width: 180px;
+      height: 140px;
+      position: relative;
+      overflow: hidden;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(12,20,30,0.8);
+    }
+    .controls {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 18px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      pointer-events: auto;
+    }
+    .dpad {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    button, input[type="range"] {
+      pointer-events: auto;
+    }
+    button {
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(#3d4857, #212c3b);
+      color: white;
+      font-weight: 700;
+      padding: 12px 16px;
+      min-width: 84px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+    .alt {
+      background: linear-gradient(#4a4f42, #313929);
+    }
+    .wide {
+      min-width: 110px;
+    }
+    .steer-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(8,14,22,0.42);
+      border-radius: 12px;
+      padding: 8px 12px;
+      border:1px solid rgba(255,255,255,0.1);
+    }
+    .steer-wrap span {
+      font-size: 12px;
+      font-weight: bold;
+    }
+    input[type="range"] {
+      width: 180px;
+      accent-color: #67d7ff;
+    }
+    @media (max-width: 760px) {
+      .map-box { width: 130px; height: 100px; }
+      button { padding: 10px 12px; min-width: 70px; }
+      .wide { min-width: 88px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="1280" height="720"></canvas>
+
+  <div class="hud">
+    <div class="topbar">
+      <div class="panel mission" id="missionPanel"></div>
+      <div class="map-box" id="mapBox"></div>
+    </div>
+
+    <div class="controls">
+      <div class="dpad">
+        <div class="row">
+          <button id="hornBtn" class="wide alt">HORN</button>
+          <button id="mapBtn" class="wide">MAP</button>
+        </div>
+        <div class="row">
+          <button id="leftBtn">LEFT</button>
+          <button id="viewBtn" class="wide alt">VIEW</button>
+          <button id="rightBtn">RIGHT</button>
+        </div>
+        <div class="row">
+          <button id="downBtn">DOWN</button>
+          <button id="upBtn">UP</button>
+        </div>
+      </div>
+
+      <div class="steer-wrap">
+        <span>STEER</span>
+        <input id="steerSlider" type="range" min="-100" max="100" value="0" />
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const missionPanel = document.getElementById('missionPanel');
+    const mapBox = document.getElementById('mapBox');
+    const steerSlider = document.getElementById('steerSlider');
+
+    const route = [
+      { name: 'Munich', x: 150, y: 160 },
+      { name: 'Ingolstadt', x: 440, y: 280 },
+      { name: 'Pfaffenhofen', x: 620, y: 390 },
+      { name: 'Allershausen', x: 760, y: 470 },
+      { name: 'Nürnberg', x: 980, y: 620 }
+    ];
+
+    const game = {
+      mapOpen: false,
+      viewMode: 'driver',
+      time: 0,
+      distance: 0,
+      routeDistance: 98,
+      fuel: 100,
+      damage: 0,
+      speed: 0,
+      missionProgress: 72,
+      eta: 1.8,
+      nextRestStop: 5.2,
+      horn: false,
+      trafficCount: 15,
+      deliveryComplete: false,
+      gameOver: false,
+      lastFuelAdTrigger: 0,
+      adTimer: 0,
+      camera: { x: 0, y: 0 },
+      player: {
+        x: 150,
+        y: 170,
+        angle: 0,
+        width: 30,
+        height: 58,
+        speed: 0,
+        steer: 0
+      },
+      traffic: []
+    };
+
+    const keys = {};
+
+    function initGame() {
+      spawnTraffic();
+      updateMissionText();
+    }
+
+    function spawnTraffic() {
+      const names = ['DHL Truck', 'Dachser', 'DB Schenker', 'Kühne + Nagel', 'BMW', 'Audi', 'Mercedes', 'VW', 'Smart', 'MAN', 'Volvo', 'Scania', 'Opel', 'Ford', 'Tesla'];
+      game.traffic = [];
+      for (let i = 0; i < 15; i++) {
+        const lane = (i % 3) - 1;
+        const width = (Math.random() > 0.6) ? 24 : 30;
+        const height = (Math.random() > 0.6) ? 46 : 56;
+        const isTruck = i < 4 || Math.random() < 0.25;
+        const type = names[i % names.length];
+        const x = 350 + (lane * 90) + (Math.random() * 60);
+        const y = 80 + i * 46 + (Math.random() * 28);
+        game.traffic.push({
+          id: i,
+          x,
+          y,
+          w: width,
+          h: height,
+          speed: 80 + Math.random() * 42,
+          angle: 0,
+          lane,
+          direction: 1,
+          indicator: Math.random() > 0.5 ? 'left' : 'right',
+          label: type,
+          isTruck,
+          color: isTruck ? '#d9b15f' : ['#5bc0eb', '#f4d35e', '#f7a072', '#9ad1d4', '#ee6c4d', '#c0df85'][i % 6],
+          avoidCooldown: 0
+        });
+      }
+    }
+
+    function updateMissionText() {
+      missionPanel.innerHTML = [
+        '<strong>Mission:</strong> Cargo Electronics x12 / Engine Parts<br>',
+        '<strong>Reward:</strong> €3,200 / €1,250<br>',
+        '<strong>Route:</strong> Munich → Nuremberg 98km<br>',
+        '<strong>ETA:</strong> ' + game.eta.toFixed(1) + 'h &nbsp; Next stop: ' + game.nextRestStop.toFixed(1) + 'km<br>',
+        '<strong>Fuel:</strong> ' + Math.max(0, game.fuel).toFixed(0) + '% &nbsp; Traffic: ' + game.traffic.length + '<br>',
+        '<strong>Damage:</strong> ' + game.damage.toFixed(0) + '% &nbsp; Progress: ' + game.missionProgress + '%'
+      ].join('');
+    }
+
+    function update(dt) {
+      if (game.gameOver) return;
+
+      game.time += dt;
+      game.adTimer += dt;
+      if (game.adTimer > 120) {
+        game.adTimer = 0;
+        if (window.AndroidBridge && typeof window.AndroidBridge.showInterstitial === 'function') {
+          window.AndroidBridge.showInterstitial();
+        }
+      }
+
+      const acceleration = (keys['ArrowUp'] || keys['w'] || keys['W']) ? 140 : 0;
+      const braking = (keys['ArrowDown'] || keys['s'] || keys['S']) ? 220 : 0;
+      const left = (keys['ArrowLeft'] || keys['a'] || keys['A']) ? 1 : 0;
+      const right = (keys['ArrowRight'] || keys['d'] || keys['D']) ? 1 : 0;
+
+      let steerInput = (right - left) * 1.2 + (steerSlider.value / 100) * 1.5;
+      if (Math.abs(steerInput) > 1) steerInput = Math.sign(steerInput);
+      game.player.steer = steerInput;
+
+      if (acceleration > 0) {
+        game.speed += acceleration * dt;
+      } else {
+        game.speed -= 70 * dt;
+      }
+
+      if (braking > 0) {
+        game.speed -= braking * dt;
+      }
+
+      game.speed *= 0.995;
+      game.speed = Math.max(-18, Math.min(118, game.speed));
+      if (game.speed < 0) game.speed = Math.max(game.speed, -10);
+
+      const turnRate = (game.speed / 38) * (0.8 + Math.abs(game.player.steer));
+      game.player.angle += game.player.steer * turnRate * dt;
+
+      const xMove = Math.cos(game.player.angle) * game.speed * dt;
+      const yMove = Math.sin(game.player.angle) * game.speed * dt;
+
+      game.player.x += xMove * 1.2;
+      game.player.y += yMove * 1.2;
+
+      game.player.x = Math.max(80, Math.min(1100, game.player.x));
+      game.player.y = Math.max(60, Math.min(660, game.player.y));
+
+      const fuelBurn = Math.abs(game.speed) * 0.018;
+      game.fuel = Math.max(0, game.fuel - fuelBurn * dt);
+      if (game.fuel <= 0) {
+        triggerGameOver();
+      }
+      if (game.fuel < 20 && game.time - game.lastFuelAdTrigger > 18) {
+        game.lastFuelAdTrigger = game.time;
+        if (window.AndroidBridge && typeof window.AndroidBridge.showRewardedForFuel === 'function') {
+          window.AndroidBridge.showRewardedForFuel();
+        }
+      }
+
+      game.distance += Math.abs(game.speed) * 0.0075 * dt;
+      const totalDistance = Math.min(game.routeDistance, game.distance);
+      game.missionProgress = Math.max(72, Math.min(100, 72 + (totalDistance / game.routeDistance) * 28));
+      game.eta = Math.max(0.3, (game.routeDistance - totalDistance) / 45);
+      game.nextRestStop = Math.max(0.8, (game.routeDistance - totalDistance) * 0.75);
+
+      updateTraffic(dt);
+      updateCamera();
+      updateMissionText();
+    }
+
+    function updateTraffic(dt) {
+      for (const v of game.traffic) {
+        v.y += v.speed * dt * v.direction;
+        if (v.y > 760) {
+          v.y = -120;
+          v.x = 280 + Math.random() * 540;
+          v.speed = 70 + Math.random() * 55;
+        }
+        if (Math.abs(v.x - game.player.x) < 48 && Math.abs(v.y - game.player.y) < 56) {
+          const impact = Math.abs(game.speed) * 0.45;
+          game.speed *= 0.5;
+          game.damage = Math.min(100, game.damage + impact * 0.5);
+          game.fuel = Math.max(0, game.fuel - 0.8);
+          v.x += 22;
+        }
+
+        const laneTarget = Math.sin((v.y * 0.05) + v.id) * 2;
+        v.x += laneTarget * dt * 8;
+        if (v.avoidCooldown > 0) v.avoidCooldown -= dt;
+
+        if (Math.abs(v.x - game.player.x) < 70 && Math.abs(v.y - game.player.y) < 80 && v.avoidCooldown <= 0) {
+          const leftDiff = v.x - game.player.x;
+          if (Math.abs(leftDiff) < 30) {
+            v.x += Math.sign(leftDiff || 1) * 30 * dt;
+            v.avoidCooldown = 0.8;
+          }
+        }
+      }
+    }
+
+    function updateCamera() {
+      const targetX = Math.max(0, Math.min(1000, game.player.x - 640));
+      const targetY = Math.max(0, Math.min(500, game.player.y - 360));
+      game.camera.x += (targetX - game.camera.x) * 0.07;
+      game.camera.y += (targetY - game.camera.y) * 0.07;
+    }
+
+    function triggerGameOver() {
+      if (game.gameOver) return;
+      game.gameOver = true;
+      if (window.AndroidBridge && typeof window.AndroidBridge.showInterstitial === 'function') {
+        window.AndroidBridge.showInterstitial();
+      }
+      alert('Game Over — Fuel empty. Retry the route.');
+    }
+
+    function render() {
+      const day = (Math.sin(game.time * 0.15) + 1) * 0.5;
+      const skyTop = 30 + day * 90;
+      ctx.fillStyle = `hsl(${210 - day * 12}, 40%, ${20 + day * 35}%)`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      drawGround(day);
+      drawRoad();
+      drawRoute();
+      drawTraffic();
+      drawTruck();
+      drawSigns();
+      drawHUD();
+      drawMiniMap();
+      if (game.mapOpen) drawFullMap();
+    }
+
+    function drawGround(day) {
+      ctx.fillStyle = `rgba(18, ${120 + day * 44}, 40, 1)`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < 26; i++) {
+        const x = (i * 57 + (game.camera.x * 0.2)) % (canvas.width + 80);
+        const y = 90 + (i % 5) * 55;
+        ctx.fillStyle = i % 2 === 0 ? 'rgba(20,80,25,0.9)' : 'rgba(24,70,32,0.7)';
+        ctx.fillRect(x - 20, y, 30, 55);
+      }
+      ctx.fillStyle = `rgba(255,255,255,${0.08 + day * 0.2})`;
+      for (let i = 0; i < 32; i++) {
+        const x = i * 33 + ((game.camera.x * 0.8) % 33);
+        const y = ((i * 51) % canvas.height);
+        ctx.fillRect(x, y, 2, 16);
+      }
+    }
+
+    function drawRoad() {
+      const roadX = 350 - game.camera.x;
+      const roadY = 50 - game.camera.y;
+      const roadW = 560;
+      const roadH = 660;
+
+      ctx.fillStyle = '#3e474d';
+      ctx.fillRect(roadX, roadY, roadW, roadH);
+      ctx.fillStyle = '#5e666d';
+      ctx.fillRect(roadX + 20, roadY + 16, 18, roadH - 32);
+      ctx.fillRect(roadX + roadW - 38, roadY + 16, 18, roadH - 32);
+
+      for (let y = roadY; y < roadY + roadH; y += 42) {
+        ctx.fillStyle = '#f5f5dc';
+        ctx.fillRect(roadX + roadW / 2 - 4, y, 8, 24);
+      }
+
+      const lines = 12;
+      for (let i = 0; i < lines; i++) {
+        const px = 350 + (i % 2 === 0 ? 160 : 390) - game.camera.x;
+        const py = 50 + i * 55 - game.camera.y;
+        ctx.strokeStyle = '#fff';
+        ctx.setLineDash([14, 18]);
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px, py + 30);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    function drawRoute() {
+      ctx.strokeStyle = '#ffb703';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([12, 10]);
+      ctx.beginPath();
+      route.forEach((pt, index) => {
+        const x = pt.x - game.camera.x;
+        const y = pt.y - game.camera.y;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const next = route.find(p => p.x > game.player.x - 40) || route[route.length - 1];
+      ctx.fillStyle = '#ffea00';
+      ctx.beginPath();
+      ctx.arc(next.x - game.camera.x, next.y - game.camera.y, 10, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawTraffic() {
+      for (const car of game.traffic) {
+        const x = car.x - game.camera.x;
+        const y = car.y - game.camera.y;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(car.angle || 0);
+        ctx.fillStyle = car.color;
+        ctx.fillRect(-car.w / 2, -car.h / 2, car.w, car.h);
+        ctx.fillStyle = '#e7eef5';
+        ctx.fillRect(-car.w / 2 + 4, -car.h / 2 + 6, car.w - 8, 10);
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(-car.w / 2 + 7, car.h / 2 - 8, 8, 8);
+        ctx.fillRect(car.w / 2 - 15, car.h / 2 - 8, 8, 8);
+        ctx.fillStyle = '#ffd166';
+        if (car.indicator === 'left') {
+          ctx.fillRect(-car.w / 2 + 2, -car.h / 2 + 1, 5, 5);
+        } else {
+          ctx.fillRect(car.w / 2 - 7, -car.h / 2 + 1, 5, 5);
+        }
+        ctx.restore();
+      }
+    }
+
+    function drawTruck() {
+      const truckX = game.player.x - game.camera.x;
+      const truckY = game.player.y - game.camera.y;
+      ctx.save();
+      ctx.translate(truckX, truckY);
+      ctx.rotate(game.player.angle);
+      ctx.fillStyle = '#2ec4b6';
+      ctx.fillRect(-game.player.width / 2, -game.player.height / 2, game.player.width, game.player.height);
+      ctx.fillStyle = '#eaf4f4';
+      ctx.fillRect(-game.player.width / 2 + 6, -game.player.height / 2 + 10, game.player.width - 12, 16);
+      ctx.fillStyle = '#111';
+      ctx.fillRect(-game.player.width / 2 + 8, game.player.height / 2 - 12, 8, 12);
+      ctx.fillRect(game.player.width / 2 - 16, game.player.height / 2 - 12, 8, 12);
+      ctx.fillStyle = '#ffea00';
+      ctx.fillRect(-game.player.width / 2 + 5, -game.player.height / 2 + 5, 8, 5);
+      ctx.fillRect(game.player.width / 2 - 13, -game.player.height / 2 + 5, 8, 5);
+      ctx.restore();
+    }
+
+    function drawSigns() {
+      const signData = [
+        { text: 'A9 E35', x: 610, y: 104 },
+        { text: 'Nürnberg', x: 980, y: 620 },
+        { text: 'Pfaffenhofen', x: 620, y: 390 },
+        { text: 'Rest Area', x: 760, y: 470 }
+      ];
+
+      for (const sign of signData) {
+        const drawX = sign.x - game.camera.x;
+        const drawY = sign.y - game.camera.y;
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.fillRect(drawX - 30, drawY - 18, 120, 30);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px Arial';
+        ctx.fillText(sign.text, drawX - 18, drawY + 3);
+      }
+    }
+
+    function drawHUD() {
+      ctx.fillStyle = 'rgba(8,14,22,0.5)';
+      ctx.fillRect(18, 18, 250, 105);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 24px Arial';
+      ctx.fillText(Math.round(Math.abs(game.speed)) + ' km/h', 30, 52);
+      ctx.font = '15px Arial';
+      ctx.fillText('Distance: ' + game.distance.toFixed(1) + ' km', 30, 78);
+      ctx.fillText('Fuel: ' + game.fuel.toFixed(0) + '%', 30, 98);
+      ctx.fillText('ETA: ' + game.eta.toFixed(1) + 'h', 30, 118);
+
+      ctx.fillStyle = 'rgba(8,14,22,0.5)';
+      ctx.fillRect(canvas.width - 230, 18, 210, 96);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 28px Arial';
+      ctx.fillText('72%', canvas.width - 200, 57);
+      ctx.font = '15px Arial';
+      ctx.fillText('Mission progress', canvas.width - 200, 80);
+      ctx.fillText('Next rest stop: ' + game.nextRestStop.toFixed(1) + ' km', canvas.width - 200, 100);
+    }
+
+    function drawMiniMap() {
+      const mini = mapBox;
+      const w = mini.clientWidth || 180;
+      const h = mini.clientHeight || 140;
+      const mapCanvas = document.createElement('canvas');
+      mapCanvas.width = w;
+      mapCanvas.height = h;
+      const mctx = mapCanvas.getContext('2d');
+      mctx.fillStyle = '#13212d';
+      mctx.fillRect(0, 0, w, h);
+      mctx.strokeStyle = '#47b6ff';
+      mctx.lineWidth = 2;
+      mctx.beginPath();
+      route.forEach((pt, index) => {
+        const nx = (pt.x / 1100) * w;
+        const ny = (pt.y / 700) * h;
+        if (index === 0) mctx.moveTo(nx, ny); else mctx.lineTo(nx, ny);
+      });
+      mctx.stroke();
+      route.forEach(pt => {
+        const x = (pt.x / 1100) * w;
+        const y = (pt.y / 700) * h;
+        mctx.fillStyle = '#ffd166';
+        mctx.beginPath();
+        mctx.arc(x, y, 3, 0, Math.PI * 2);
+        mctx.fill();
+      });
+      const px = (game.player.x / 1100) * w;
+      const py = (game.player.y / 700) * h;
+      mctx.fillStyle = '#2ec4b6';
+      mctx.beginPath();
+      mctx.arc(px, py, 5, 0, Math.PI * 2);
+      mctx.fill();
+      mini.innerHTML = '';
+      mini.appendChild(mapCanvas);
+    }
+
+    function drawFullMap() {
+      const overlay = document.createElement('div');
+      overlay.style.position = 'absolute';
+      overlay.style.inset = '0';
+      overlay.style.background = 'rgba(4,8,12,0.76)';
+      overlay.style.display = 'flex';
+      overlay.style.alignItems = 'center';
+      overlay.style.justifyContent = 'center';
+      overlay.style.zIndex = '50';
+      overlay.style.pointerEvents = 'none';
+      const full = document.createElement('canvas');
+      full.width = 1000;
+      full.height = 620;
+      const fctx = full.getContext('2d');
+      fctx.fillStyle = '#13212d';
+      fctx.fillRect(0, 0, full.width, full.height);
+      fctx.strokeStyle = '#59baff';
+      fctx.lineWidth = 4;
+      fctx.beginPath();
+      route.forEach((pt, index) => {
+        const x = (pt.x / 1100) * full.width;
+        const y = (pt.y / 700) * full.height;
+        if (index === 0) fctx.moveTo(x, y); else fctx.lineTo(x, y);
+      });
+      fctx.stroke();
+      fctx.fillStyle = '#2ec4b6';
+      fctx.beginPath();
+      fctx.arc((game.player.x / 1100) * full.width, (game.player.y / 700) * full.height, 10, 0, Math.PI * 2);
+      fctx.fill();
+      overlay.appendChild(full);
+      document.body.appendChild(overlay);
+      setTimeout(() => overlay.remove(), 1500);
+      game.mapOpen = false;
+    }
+
+    let lastTime = 0;
+    function loop(ts) {
+      const dt = Math.min(0.033, (ts - lastTime) / 1000 || 0.016);
+      lastTime = ts;
+      update(dt);
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function bindButton(id, action) {
+      const btn = document.getElementById(id);
+      if (btn) {
+        btn.addEventListener('pointerdown', e => { action(true); e.preventDefault(); });
+        btn.addEventListener('pointerup', () => action(false));
+        btn.addEventListener('pointerleave', () => action(false));
+      }
+    }
+
+    bindButton('upBtn', pressed => {
+      keys['ArrowUp'] = pressed;
+      keys['w'] = pressed;
+    });
+    bindButton('downBtn', pressed => {
+      keys['ArrowDown'] = pressed;
+      keys['s'] = pressed;
+    });
+    bindButton('leftBtn', pressed => {
+      keys['ArrowLeft'] = pressed;
+      keys['a'] = pressed;
+    });
+    bindButton('rightBtn', pressed => {
+      keys['ArrowRight'] = pressed;
+      keys['d'] = pressed;
+    });
+
+    document.getElementById('hornBtn').addEventListener('click', () => {
+      game.horn = !game.horn;
+      document.getElementById('hornBtn').style.background = game.horn ? 'linear-gradient(#f7c948, #a66a1f)' : 'linear-gradient(#4a4f42, #313929)';
+    });
+
+    document.getElementById('mapBtn').addEventListener('click', () => {
+      game.mapOpen = true;
+    });
+
+    document.getElementById('viewBtn').addEventListener('click', () => {
+      game.viewMode = game.viewMode === 'driver' ? 'top' : 'driver';
+    });
+
+    window.addEventListener('keydown', event => {
+      keys[event.key] = true;
+      if (event.key === 'm' || event.key === 'M') game.mapOpen = true;
+      if (event.key === 'h' || event.key === 'H') game.horn = !game.horn;
+      if (event.key === 'v' || event.key === 'V') game.viewMode = game.viewMode === 'driver' ? 'top' : 'driver';
+    });
+
+    window.addEventListener('keyup', event => {
+      keys[event.key] = false;
+    });
+
+    if (window.DeviceOrientationEvent) {
+      window.addEventListener('deviceorientation', event => {
+        if (typeof event.gamma === 'number') {
+          const value = Math.max(-1, Math.min(1, event.gamma / 25));
+          steerSlider.value = String(Math.round(value * 100));
+        }
+      });
+    }
+
+    steerSlider.addEventListener('input', () => {
+      const value = Number(steerSlider.value) / 100;
+      game.player.steer = value;
+    });
+
+    window.__fuelRewardGranted = function () {
+      game.fuel = Math.min(100, game.fuel + 100);
+      if (game.fuel <= 0) game.fuel = 100;
+    };
+
+    window.__fuelRewardUnavailable = function () {
+      game.fuel = Math.min(100, game.fuel + 15);
+    };
+
+    initGame();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
